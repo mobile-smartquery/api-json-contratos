@@ -1,0 +1,169 @@
+#include 'tlpp-core.th'
+
+@get('/api/v1/dicionario/:ctabela')
+User Function CONSULTADICIONARIO()
+
+	oRest:setKeyHeaderResponse('Content-Type','application/json')
+	u_CONSULTARSX3(oRest)
+
+Return .T.
+
+
+User Function CONSULTARSX3(oRest as object)
+
+	local aInfo        as array // informações do campo
+	local jStruct      as json
+	local aStruct      as array // estrutura dos campos
+	local jPath := oRest:getPathParamsRequest()
+	local cTableAlias := Upper(jPath['ctabela'])
+	local aTableRelation := {}
+	local nX := 0		as numeric
+
+	aInfo := {}
+
+	// verifica se é um alias válido
+	if (!empty(cTableAlias))
+		// tenta recuperar a partir da SX3
+		aStruct := FWSX3Util():getListFieldsStruct(cTableAlias, .T.)
+
+		// caso contrário pega a estrutura da temporária
+		if (len(aStruct) == 0 .AND. select(cTableAlias) > 0)
+			aStruct := (cTableAlias)->(dbStruct())
+		endIf
+
+		// verifica se encontrou
+		if (len(aStruct) > 0)
+
+			getStructByResponse(aStruct, @aInfo)
+
+			for nX := 1 to Len(aTableRelation)
+				if (!empty(aTableRelation[nX]))
+					getStructByResponse(FWSX3Util():getListFieldsStruct(aTableRelation[nX], .T.), @aInfo)
+				endif
+			next nX
+
+			jStruct := JsonObject():New()
+			jStruct['struct'] := aInfo
+			jStruct['description'] := FWHttpEncode(allTrim(FWSX2Util():getX2Name(cTableAlias)))
+			oRest:setResponse(jStruct:toJson())
+		else
+			SetRestFault(ERRO_HTTP,  'alias "' + cTableAlias + '" inexistente')
+		endIf
+	else
+		SetRestFault(ERRO_HTTP,  'alias "' + cTableAlias + '" não informado')
+	endIf
+
+	if (valType(aInfo) == 'J')
+		freeObj(aInfo)
+	endIf
+
+return
+
+
+static function getOptions(field as character, options as character) as array
+	local info       as json // objeto JSON para informações gerais (campos, registros etc)
+	local newOptions as array // array de JSON com a lista de opções e seus valores
+	local aux        as array // array auxiliar para as options
+	local option     as array // opção quebrada entre ID e DESCRIPTION
+	local index      as numeric // controle do FOR
+
+	newOptions := {}
+
+	// verificar se possui opções
+	if (!empty(options))
+
+		If Upper(allTrim(field)) == "A1_PESSOA"
+			options += ";E=Estrangeiro"
+		Endif
+
+		// verificar se é uma função que será macroexecutada
+		if (at('#', options) > 0)
+			options := allTrim(&(strTran(options, '#', '')))
+		endIf
+
+		// quebrar a lista de opções pelo separador ";"
+		aux := strTokArr2(options, ';')
+
+		// percorrer lista e criar array de opções
+		for index := 01 to len(aux)
+			// quebrar o ID e o DESCRIPTION
+			option := strTokArr2(allTrim(aux[index]), '=')
+			// verifica a quebra
+			if (len(option) == 02)
+				// adicionar no objeto
+				info                := JsonObject():new()
+				info['value']          := allTrim(option[01])
+				info['label'] := allTrim(option[02])
+				// adicionar no array
+				aAdd(newOptions, info)
+			endIf
+		next index
+	endIf
+return newOptions
+
+
+Static Function getStructByResponse(aStruct as array, aInfo as array)
+	local cDescription 	as character // descrição do campo
+	local cOrder       	as character // ordem do campo
+	local nIndex       	as numeric // controle de FOR
+	local nCount  		as numeric // contador de registros
+
+	// verifica se encontrou
+	if (len(aStruct) > 0)
+		// inicializa a ordem
+		cOrder := replicate('0', 02)
+
+		// percorre os campos para adicionar na estrutura
+		nCount := len(aStruct)
+
+		for nIndex := 01 to nCount
+			// incrementa a ordem
+			cOrder := soma1(cOrder)
+
+			// cria objeto com os dados do campo
+			//aInfo := JsonObject():new()
+			aAdd(aInfo,JsonObject():new())
+
+			// remove espaços em branco
+			aStruct[nIndex, 01] := allTrim(aStruct[nIndex, 01])
+
+			// recupera a descrição do campo
+			cDescription := FWSX3Util():getDescription(aStruct[nIndex, 01])
+
+			aInfo[Len(aInfo)]['from_sx3']     := .T.
+			aInfo[Len(aInfo)]['required']     := X3Obrigat(aStruct[nIndex, 01]) // campo obrigatório
+			aInfo[Len(aInfo)]['order']        := getSX3Cache(aStruct[nIndex, 01], 'X3_ORDEM') // ordem do campo
+			aInfo[Len(aInfo)]['virtual']      := getSX3Cache(aStruct[nIndex, 01], 'X3_CONTEXT') == 'V' // verifica se o campo é virtual
+			aInfo[Len(aInfo)]['mask']         := allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_PICTURE')) // picture/mask do campo
+			aInfo[Len(aInfo)]['dynamic_mask'] := allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_PICTVAR')) // picture/mask variável do campo
+			aInfo[Len(aInfo)]['options']      := getOptions(aStruct[nIndex, 01], allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_CBOX'))) // lista de opções
+			aInfo[Len(aInfo)]['title']        := allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_TITULO')) // título do campo
+			aInfo[Len(aInfo)]['validation']   := allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_VALID')) // validação do campo
+			aInfo[Len(aInfo)]['level']        := getSX3Cache(aStruct[nIndex, 01], 'X3_NIVEL') // nível de acesso
+			aInfo[Len(aInfo)]['enabled']      := X3Uso(getSX3Cache(aStruct[nIndex, 01], 'X3_USADO')) // campo habilitado/usado?
+			aInfo[Len(aInfo)]['agrup_title']  := X3Uso(getSX3Cache(aStruct[nIndex, 01], 'X3_AGRUP')) // campo habilitado/usado?
+			aInfo[Len(aInfo)]['id']           := allTrim(aStruct[nIndex, 01]) // id do campo
+			aInfo[Len(aInfo)]['type']         := aStruct[nIndex, 02] // tipo do campo
+			aInfo[Len(aInfo)]['size']         := aStruct[nIndex, 03] // tamanho do campo
+			aInfo[Len(aInfo)]['decimals']     := aStruct[nIndex, 04] // decimais do campo
+			aInfo[Len(aInfo)]['description']  := noAcento(allTrim(cDescription)) // descrição do campo
+
+			If allTrim(aStruct[nIndex, 01]) == "A1_XREPS" .OR. allTrim(aStruct[nIndex, 01]) == "A1_XREPS2"
+				aInfo[Len(aInfo)]['standard_query'] := "SA1"
+			Else
+				aInfo[Len(aInfo)]['standard_query'] := allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_F3')) // consulta padrão
+			Endif
+
+			// caso seja campo virtual, devemos recuperar o inicializador de browse
+			if (aInfo[Len(aInfo)]['virtual'])
+				aInfo[Len(aInfo)]['default'] := allTrim(getSX3Cache(aStruct[nIndex, 01], 'X3_INIBRW'))
+			else
+				aInfo[Len(aInfo)]['default'] := ''
+			endIf
+
+		next nIndex
+	Else
+		SetRestFault(ERRO_HTTP,  'alias "' + cTableAlias + '" inexistente')
+	Endif
+Return
+
